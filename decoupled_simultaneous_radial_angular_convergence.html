@@ -1,0 +1,169 @@
+
+<style>
+#wrap { width:100%; aspect-ratio:1; max-width:660px; margin:0 auto; position:relative; background:#050a18; border-radius:14px; overflow:hidden; }
+canvas { width:100%; height:100%; display:block; }
+#hud { position:absolute; top:14px; left:0; right:0; text-align:center; font-family:monospace; font-size:12px; letter-spacing:.1em; color:rgba(160,200,255,.8); pointer-events:none; }
+#bar-bg { position:absolute; bottom:16px; left:10%; width:80%; height:2px; background:rgba(255,255,255,.07); border-radius:2px; }
+#bar { height:100%; width:0%; background:linear-gradient(90deg,#4f8ef7,#a78bfa); border-radius:2px; transition:width .08s linear; }
+#overlay { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); text-align:center; font-family:monospace; font-size:13px; font-weight:500; color:rgba(0,0,0,0); pointer-events:none; white-space:nowrap; transition:color 1.4s ease; }
+#overlay.show { color:rgba(200,230,255,.95); text-shadow:0 0 18px rgba(100,160,255,.7); }
+#rbtn { position:absolute; bottom:28px; right:14px; background:rgba(255,255,255,.06); border:.5px solid rgba(255,255,255,.18); color:rgba(160,200,255,.8); font-size:11px; padding:5px 11px; border-radius:6px; cursor:pointer; font-family:monospace; }
+#rbtn:hover { background:rgba(255,255,255,.12); }
+</style>
+<div id="wrap">
+  <canvas id="cv"></canvas>
+  <div id="hud">epoch 0 — initialization</div>
+  <div id="bar-bg"><div id="bar"></div></div>
+  <div id="overlay">Decoupled Loss: Simultaneous Multi-Radial Convergence</div>
+  <button id="rbtn">replay</button>
+</div>
+<script>
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const wrap = document.getElementById('wrap');
+const hud = document.getElementById('hud');
+const bar = document.getElementById('bar');
+const overlay = document.getElementById('overlay');
+const rbtn = document.getElementById('rbtn');
+
+const NEON = [
+  '#00f0ff','#ff6e00','#39ff14','#ff2d55','#bf5fff',
+  '#ff007f','#00cfff','#ffdf00','#7dff6b','#ff8c42'
+];
+const NC = 10, PPC = 50, DUR = 15000;
+const RINGS = [.28,.44,.60,.78];
+
+let W,H,cx,cy,MR,particles=[],raf=null,t0=null;
+
+function resize(){
+  const r=wrap.getBoundingClientRect();
+  W=r.width; H=r.height;
+  cv.width=W*devicePixelRatio; cv.height=H*devicePixelRatio;
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  ctx.scale(devicePixelRatio,devicePixelRatio);
+  cx=W/2; cy=H/2; MR=Math.min(W,H)*.42;
+}
+
+function tAngle(c){ return (c/NC)*Math.PI*2 - Math.PI/2; }
+function tRadius(c){ return MR*RINGS[c%RINGS.length]; }
+
+function init(){
+  particles=[];
+  for(let c=0;c<NC;c++){
+    for(let i=0;i<PPC;i++){
+      const a=Math.random()*Math.PI*2;
+      const r=Math.random()*MR*.09;
+      const jA=(Math.random()-.5)*.25;
+      const jR=(Math.random()-.5)*.04*MR;
+      particles.push({
+        c,
+        sx:cx+Math.cos(a)*r, sy:cy+Math.sin(a)*r,
+        ta:tAngle(c)+jA,
+        tr:tRadius(c)+jR,
+        phase:(Math.random()-.5)*.3
+      });
+    }
+  }
+}
+
+function easeOut(t){ return 1-Math.pow(1-t,3); }
+function easeOutSoft(t){ return 1-Math.pow(1-t,2.2); }
+
+function starField(ts){
+  for(let i=0;i<90;i++){
+    const sx=(i*233+7)%W, sy=(i*137+13)%H;
+    const br=.08+((i*17)%5)*.05;
+    ctx.beginPath(); ctx.arc(sx,sy,.6+((i%3)*.4),0,Math.PI*2);
+    ctx.fillStyle=`rgba(200,220,255,${br})`; ctx.fill();
+  }
+}
+
+function drawGuides(alpha){
+  ctx.save();
+  RINGS.forEach(f=>{
+    const r=MR*f;
+    ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2);
+    ctx.setLineDash([5,9]); ctx.lineWidth=.7;
+    ctx.strokeStyle=`rgba(80,140,255,${alpha*.9})`; ctx.stroke();
+  });
+  for(let c=0;c<NC;c++){
+    const a=tAngle(c);
+    ctx.beginPath();
+    ctx.moveTo(cx+Math.cos(a)*MR*.06, cy+Math.sin(a)*MR*.06);
+    ctx.lineTo(cx+Math.cos(a)*MR*1.06, cy+Math.sin(a)*MR*1.06);
+    ctx.setLineDash([3,10]); ctx.lineWidth=.55;
+    ctx.strokeStyle=`rgba(60,120,255,${alpha*.6})`; ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+function frame(ts){
+  if(!t0) t0=ts;
+  const elapsed=ts-t0;
+  const tNorm=Math.min(elapsed/DUR,1);
+
+  ctx.fillStyle='#050a18';
+  ctx.fillRect(0,0,W,H);
+  starField();
+
+  const EPOCH0=2000/DUR, OPT_END=9000/DUR;
+  let phase, animT;
+  if(tNorm<EPOCH0){ phase=0; animT=tNorm/EPOCH0; }
+  else if(tNorm<OPT_END){ phase=1; animT=(tNorm-EPOCH0)/(OPT_END-EPOCH0); }
+  else { phase=2; animT=(tNorm-OPT_END)/(1-OPT_END); }
+
+  const guideAlpha = phase===0 ? .18 : .3;
+  drawGuides(guideAlpha);
+
+  particles.forEach(p=>{
+    let px,py;
+    if(phase===0){
+      px=p.sx; py=p.sy;
+    } else {
+      const raw=phase===1?animT:1;
+      const et=easeOut(Math.min(raw,1));
+      const startA=Math.atan2(p.sy-cy, p.sx-cx);
+      const startR=Math.hypot(p.sx-cx, p.sy-cy);
+      const curR=lerp(startR, p.tr, et);
+      let da=p.ta-startA;
+      while(da>Math.PI) da-=Math.PI*2;
+      while(da<-Math.PI) da+=Math.PI*2;
+      const curA=startA+da*et;
+      px=cx+Math.cos(curA)*curR;
+      py=cy+Math.sin(curA)*curR;
+    }
+    const col=NEON[p.c];
+    ctx.beginPath(); ctx.arc(px,py,2.6,0,Math.PI*2);
+    ctx.fillStyle=col; ctx.globalAlpha=.9; ctx.fill();
+    ctx.beginPath(); ctx.arc(px,py,5.2,0,Math.PI*2);
+    ctx.fillStyle=col; ctx.globalAlpha=.15; ctx.fill();
+    ctx.beginPath(); ctx.arc(px,py,9,0,Math.PI*2);
+    ctx.fillStyle=col; ctx.globalAlpha=.05; ctx.fill();
+    ctx.globalAlpha=1;
+  });
+
+  if(phase===2 && animT>.35) overlay.classList.add('show');
+
+  const labels=['epoch 0 — initialization','simultaneous radial + angular optimization','convergence — static multi-radial separation'];
+  hud.textContent=labels[phase];
+  bar.style.width=(tNorm*100).toFixed(1)+'%';
+
+  if(tNorm<1) raf=requestAnimationFrame(frame);
+}
+
+function lerp(a,b,t){ return a+(b-a)*t; }
+
+function start(){
+  if(raf) cancelAnimationFrame(raf);
+  t0=null; raf=null;
+  overlay.classList.remove('show');
+  bar.style.width='0%';
+  resize(); init();
+  raf=requestAnimationFrame(frame);
+}
+
+rbtn.addEventListener('click',start);
+window.addEventListener('resize',()=>{ resize(); init(); });
+start();
+</script>
